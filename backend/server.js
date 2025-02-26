@@ -7,13 +7,11 @@ require('dotenv').config();
 const app = express();
 
 const corsOptions = {
-  origin: ['http://localhost:5174','http://localhost:3000', 'https://moodtunes-frontend.onrender.com'],
+  origin: ['http://localhost:5174', 'http://localhost:3000'],
   methods: 'GET,POST,PUT,DELETE,OPTIONS',
   allowedHeaders: 'Content-Type,Authorization',
   credentials: true,
-  optionsSuccessStatus: 204
 };
-
 app.use(cors(corsOptions));
 app.use(express.json());
 
@@ -27,6 +25,7 @@ const spotifyApi = new SpotifyWebApi({
 
 const chatSessions = new Map();
 let spotifyTokens = { accessToken: null, refreshToken: null, expiresAt: 0 };
+const usedTracks = new Set();
 
 const getMoodMessage = (mood) => {
   const moodMessages = {
@@ -59,14 +58,19 @@ app.post('/chat', async (req, res) => {
 
   try {
     if (!chatSessions.has(userId)) {
-        const initialPrompt = `
+      const initialPrompt = `
         Você é um DJ terapêutico especializado em criar playlists personalizadas com base no humor das pessoas. 
         Sua tarefa é:
         
         1. Iniciar a conversa se apresentando como um DJ terapêutico e explicando que vai criar uma playlist personalizada com base no humor do usuário.
-        2. Conversar com o usuário para entender como ele está se sentindo hoje.
-        3. Após entender o humor do usuário, diga que está gerando uma playlist especialmente para ele.
-        `;
+        2. Conversar com o usuário para entender como ele está se sentindo hoje. Faça perguntas detalhadas para entender o humor e as preferências musicais do usuário.
+        3. Após 4 interações, retorne **apenas** um JSON com o humor e uma lista de 10 músicas que existam no spotify. O formato deve ser:
+           {
+             "mood": "humor do usuário",
+             "tracks": ["Música 1", "Música 2", "Música 3", ...]
+           }
+           **Não inclua nenhum texto adicional além do JSON.**
+      `;
       chatSessions.set(userId, { chat: model.startChat({ history: [{ role: 'user', parts: [{ text: initialPrompt }] }] }), interactionCount: 0 });
     }
 
@@ -75,11 +79,21 @@ app.post('/chat', async (req, res) => {
     const responseText = await result.response.text();
     session.interactionCount++;
 
-    if (session.interactionCount >= 3) {
-      const parsed = parseGeminiResponse(responseText);
-      if (parsed) {
-        chatSessions.delete(userId);
-        return res.json({ action: 'create_playlist', data: { message: parsed.message, mood: parsed.mood, tracks: parsed.tracks } });
+    if (session.interactionCount >= 4) {
+      const jsonMatch = responseText.match(/```json([\s\S]*?)```/);
+      if (jsonMatch) {
+        const parsed = parseGeminiResponse(jsonMatch[1].trim());
+        if (parsed) {
+          chatSessions.delete(userId);
+          const playlistResponse = await createPlaylist(parsed.mood, parsed.tracks);
+          return res.json({ 
+            action: 'playlist_created', 
+            data: { 
+              message: parsed.message, 
+              playlist: playlistResponse.playlist 
+            } 
+          });
+        }
       }
     }
 
@@ -90,29 +104,107 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-app.get('/spotify/auth', (req, res) => res.redirect(spotifyApi.createAuthorizeURL(['playlist-modify-public', 'user-read-private'], 'state')));
+const searchTrack = async (track) => {
+  try {
+    // Limpa e normaliza o nome da música e do artista
+    const [title, artist] = track.split(/ - (.*)/s).map(s => s.trim().toLowerCase());
+
+    // Tenta diferentes combinações de busca
+    const queries = [
+      `track:"${title}" artist:"${artist}"`, // Busca exata
+      `track:"${title}"`, // Apenas o nome da música
+      `artist:"${artist}"`, // Apenas o artista
+      `${title} ${artist}`, // Busca geral
+    ];
+
+    for (const query of queries) {
+      const results = await spotifyApi.search(query, ['track'], { limit: 5, market: 'BR' });
+
+      // Verifica se há correspondências exatas ou parciais
+      const match = results.body.tracks.items.find(item => {
+        const itemTitle = item.name.toLowerCase();
+        const itemArtist = item.artists.map(a => a.name.toLowerCase()).join(' ');
+        return (
+          (itemTitle.includes(title) || title.includes(itemTitle)) &&
+          (itemArtist.includes(artist) || artist.includes(itemArtist))
+        );
+      });
+
+      if (match && !usedTracks.has(match.uri)) {
+        usedTracks.add(match.uri);
+        return match.uri;
+      }
+    }
+
+    console.warn(`Música não encontrada: ${track}`);
+    return null;
+  } catch (error) {
+    console.error(`Erro ao buscar música "${track}":`, error.message);
+    return null;
+  }
+};
+const createPlaylist = async (mood, tracks) => {
+  try {
+    if (typeof mood !== 'string' || mood.trim().length === 0) throw new Error('Campo mood ausente ou inválido');
+    if (!Array.isArray(tracks) || tracks.length === 0) throw new Error('Formato inválido para tracks. Deve ser um array de strings.');
+
+    const uris = (await Promise.all(tracks.slice(0, 10).map(searchTrack))).filter(uri => uri).slice(0, 10);
+
+    if (uris.length < 3) {
+      return { success: false, message: 'Não foi possível encontrar músicas suficientes para criar a playlist.' };
+    }
+
+    const playlistName = `MoodTunes: ${new Date().toLocaleDateString('pt-BR')}`;
+    const playlist = await spotifyApi.createPlaylist(playlistName, { public: true, description: `Playlist gerada automaticamente pelo MoodTunes para o humor: ${mood}` });
+    await spotifyApi.addTracksToPlaylist(playlist.body.id, uris);
+
+    return {
+      success: true,
+      message: getMoodMessage(mood),
+      playlist: {
+        name: playlistName,
+        url: playlist.body.external_urls.spotify,
+        id: playlist.body.id,
+        trackCount: uris.length,
+        mood,
+      },
+    };
+  } catch (error) {
+    console.error('Erro crítico:', error.stack);
+    throw error;
+  }
+};
+
+
+app.get('/auth', (req, res) => res.redirect(spotifyApi.createAuthorizeURL(['playlist-modify-public', 'user-read-private'], 'state')));
+
+app.get('/check', (req, res) => {
+  if (spotifyTokens.accessToken) {
+    res.json({ isAuthenticated: true }); 
+  } else {
+    res.status(401).json({ isAuthenticated: false }); 
+  }
+});
 
 app.get('/callback', async (req, res) => {
-    try {
-      const { code } = req.query;
-      const data = await spotifyApi.authorizationCodeGrant(code);
-  
-     
-      spotifyTokens = {
-        accessToken: data.body.access_token,
-        refreshToken: data.body.refresh_token,
-        expiresAt: Date.now() + (data.body.expires_in * 1000),
-      };
-  
-      spotifyApi.setAccessToken(spotifyTokens.accessToken);
-  
-     
-      res.redirect('http://localhost:5174');
-    } catch (error) {
-      console.error('Erro na autenticação:', error);
-      res.status(500).send('Erro na autenticação');
-    }
-  });
+  try {
+    const { code } = req.query;
+    const data = await spotifyApi.authorizationCodeGrant(code);
+
+    spotifyTokens = {
+      accessToken: data.body.access_token,
+      refreshToken: data.body.refresh_token,
+      expiresAt: Date.now() + (data.body.expires_in * 1000),
+    };
+
+    spotifyApi.setAccessToken(spotifyTokens.accessToken);
+
+    res.redirect('http://localhost:5174');
+  } catch (error) {
+    console.error('Erro na autenticação:', error);
+    res.status(500).send('Erro na autenticação');
+  }
+});
 
 const checkSpotifyAuth = async (req, res, next) => {
   try {
@@ -128,22 +220,16 @@ const checkSpotifyAuth = async (req, res, next) => {
   }
 };
 
-app.post('/create/playlist', checkSpotifyAuth, async (req, res) => {
+app.post('/playlist', checkSpotifyAuth, async (req, res) => {
   try {
     const { mood, tracks } = req.body;
-    if (!mood || typeof mood !== 'string') return res.status(400).json({ error: 'Campo mood ausente ou inválido' });
-    if (!tracks || !Array.isArray(tracks)) return res.status(400).json({ error: 'Formato inválido para tracks' });
 
-    const searchTrack = async (track) => {
-      const [title, artist] = track.split(/ - (.*)/s).map(s => s.trim());
-      const queries = [`track:"${title}" artist:"${artist}"`, `track:"${title}"`, `artist:"${artist}"`];
-      for (const query of queries) {
-        const results = await spotifyApi.search(query, ['track'], { limit: 3, market: 'BR' });
-        const exactMatch = results.body.tracks.items.find(item => item.artists.some(a => a.name.toLowerCase() === artist.toLowerCase()) && item.name.toLowerCase() === title.toLowerCase());
-        if (exactMatch) return exactMatch.uri;
-      }
-      return null;
-    };
+    if (typeof mood !== 'string' || mood.trim().length === 0) {
+      return res.status(400).json({ error: 'Campo mood ausente ou inválido' });
+    }
+    if (!Array.isArray(tracks) || tracks.length === 0) {
+      return res.status(400).json({ error: 'Formato inválido para tracks. Deve ser um array de strings.' });
+    }
 
     const uris = (await Promise.all(tracks.slice(0, 10).map(searchTrack))).filter(uri => uri).slice(0, 10);
     if (uris.length < 3) return res.status(404).json({ error: 'Músicas não encontradas', found: uris.length, required: 3 });
@@ -158,14 +244,6 @@ app.post('/create/playlist', checkSpotifyAuth, async (req, res) => {
     res.status(error.statusCode || 500).json({ error: 'Falha na criação da playlist', details: error.body?.error || error.message });
   }
 });
-
-app.get('/check/auth', (req, res) => {
-    if (spotifyTokens.accessToken) {
-      res.json({ isAuthenticated: true });
-    } else {
-      res.status(401).json({ isAuthenticated: false });
-    }
-  });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
