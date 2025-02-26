@@ -7,7 +7,7 @@ require('dotenv').config();
 const app = express();
 
 const corsOptions = {
-  origin: ['http://localhost:5174', 'http://localhost:3000'],
+  origin: ['http://localhost:5174', 'http://localhost:3000','https://moodtunes-frontend.onrender.com'],
   methods: 'GET,POST,PUT,DELETE,OPTIONS',
   allowedHeaders: 'Content-Type,Authorization',
   credentials: true,
@@ -106,21 +106,18 @@ app.post('/chat', async (req, res) => {
 
 const searchTrack = async (track) => {
   try {
-    // Limpa e normaliza o nome da música e do artista
     const [title, artist] = track.split(/ - (.*)/s).map(s => s.trim().toLowerCase());
 
-    // Tenta diferentes combinações de busca
     const queries = [
-      `track:"${title}" artist:"${artist}"`, // Busca exata
-      `track:"${title}"`, // Apenas o nome da música
-      `artist:"${artist}"`, // Apenas o artista
-      `${title} ${artist}`, // Busca geral
+      `track:"${title}" artist:"${artist}"`, 
+      `track:"${title}"`,
+      `artist:"${artist}"`,
+      `${title} ${artist}`, 
     ];
 
     for (const query of queries) {
       const results = await spotifyApi.search(query, ['track'], { limit: 5, market: 'BR' });
 
-      // Verifica se há correspondências exatas ou parciais
       const match = results.body.tracks.items.find(item => {
         const itemTitle = item.name.toLowerCase();
         const itemArtist = item.artists.map(a => a.name.toLowerCase()).join(' ');
@@ -199,7 +196,7 @@ app.get('/callback', async (req, res) => {
 
     spotifyApi.setAccessToken(spotifyTokens.accessToken);
 
-    res.redirect('http://localhost:5174');
+    res.redirect('https://moodtunes-frontend.onrender.com');
   } catch (error) {
     console.error('Erro na autenticação:', error);
     res.status(500).send('Erro na autenticação');
