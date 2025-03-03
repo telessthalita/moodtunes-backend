@@ -24,18 +24,23 @@ const spotifyApi = new SpotifyWebApi({
 });
 
 const chatSessions = new Map();
-let spotifyTokens = { accessToken: null, refreshToken: null, expiresAt: 0 };
+const trackCache = new Map();
 const usedTracks = new Set();
+let spotifyTokens = { accessToken: null, refreshToken: null, expiresAt: 0 };
 
 const normalizeText = (text) => {
   return text
-    .normalize('NFD') 
-    .replace(/[\u0300-\u036f]/g, '') 
-    .toLowerCase() 
-    .replace(/[^a-z0-9\s]/g, ''); 
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '');
 };
 
 const searchTrack = async (track) => {
+  if (trackCache.has(track)) {
+    return trackCache.get(track);
+  }
+
   try {
     const [title, artist] = track.split(/ - (.*)/s).map(s => s.trim());
 
@@ -47,13 +52,12 @@ const searchTrack = async (track) => {
     const normalizedTitle = normalizeText(title);
     const normalizedArtist = normalizeText(artist);
 
-   
     const queries = [
-      `track:"${title}" artist:"${artist}"`, 
-      `track:"${title}"`, 
-      `artist:"${artist}"`, 
-      `${title} ${artist}`, 
-      `${normalizedTitle} ${normalizedArtist}`, 
+      `track:"${title}" artist:"${artist}"`,
+      `track:"${title}"`,
+      `artist:"${artist}"`,
+      `${title} ${artist}`,
+      `${normalizedTitle} ${normalizedArtist}`,
     ];
 
     for (const query of queries) {
@@ -64,14 +68,16 @@ const searchTrack = async (track) => {
           const itemTitle = normalizeText(item.name);
           const itemArtist = item.artists.map(a => normalizeText(a.name)).join(' ');
 
-          return (
-            (itemTitle.includes(normalizedTitle) || normalizedTitle.includes(itemTitle)) &&
-            (itemArtist.includes(normalizedArtist) || normalizedArtist.includes(itemArtist))
-          );
+          const titleMatch = itemTitle.includes(normalizedTitle) || normalizedTitle.includes(itemTitle);
+          const artistMatch = itemArtist.includes(normalizedArtist) || normalizedArtist.includes(itemArtist);
+          const popularity = item.popularity > 30;
+
+          return titleMatch && artistMatch && popularity;
         });
 
         if (match && !usedTracks.has(match.uri)) {
           usedTracks.add(match.uri);
+          trackCache.set(track, match.uri);
           return match.uri;
         }
       } catch (error) {
@@ -129,17 +135,19 @@ app.post('/chat', async (req, res) => {
       const initialPrompt = `
         Você é um DJ terapêutico especializado em criar playlists personalizadas com base no humor das pessoas. 
         Sua tarefa é:
-
         1. Iniciar a conversa se apresentando como um DJ terapêutico e explicando que vai criar uma playlist personalizada com base no humor do usuário.
         2. Conversar com o usuário para entender como ele está se sentindo hoje. Faça perguntas detalhadas para entender o humor e as preferências musicais do usuário, busque sempre ser muito empático.
-        3. Após 4 interações, retorne **apenas** um JSON com o humor e uma lista de 10 músicas que existam no Spotify. O formato deve ser:
+        3. Após 4 interações, **não exiba nada no chat**. Em vez disso, retorne **apenas** um JSON com o humor e uma lista de 10 músicas que existam no Spotify. O formato deve ser:
            {
              "mood": "humor do usuário",
              "tracks": ["Música 1", "Música 2", "Música 3", ...]
            }
            **Não inclua nenhum texto adicional além do JSON.**
       `;
-      chatSessions.set(userId, { chat: model.startChat({ history: [{ role: 'user', parts: [{ text: initialPrompt }] }] }), interactionCount: 0 });
+      chatSessions.set(userId, { 
+        chat: model.startChat({ history: [{ role: 'user', parts: [{ text: initialPrompt }] }] }), 
+        interactionCount: 0 
+      });
     }
 
     const session = chatSessions.get(userId);
@@ -148,25 +156,32 @@ app.post('/chat', async (req, res) => {
     session.interactionCount++;
 
     if (session.interactionCount >= 4) {
-      const jsonMatch = responseText.match(/```json([\s\S]*?)```/);
+      const jsonMatch = responseText.match(/\{.*\}/s);
       if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1].trim());
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
 
-        if (parsed.mood && Array.isArray(parsed.tracks) && parsed.tracks.length === 10) {
-          chatSessions.delete(userId);
+          if (parsed.mood && Array.isArray(parsed.tracks) && parsed.tracks.length === 10) {
+            chatSessions.delete(userId);
 
-          const playlistResponse = await createPlaylist(parsed.mood, parsed.tracks);
+            const playlistResponse = await createPlaylist(parsed.mood, parsed.tracks);
 
-          if (playlistResponse.success) {
-            return res.json({ 
-              action: 'playlist_created', 
-              data: { 
-                playlist: playlistResponse.playlist 
-              } 
-            });
-          } else {
-            return res.status(404).json({ error: 'Não foi possível criar a playlist.' });
+            if (playlistResponse.success) {
+              return res.json({ 
+                action: 'playlist_created', 
+                isFinished: true,
+                message: 'Obrigado por usar o MoodTunes! Sua playlist foi criada com sucesso. 🎵',
+                data: { 
+                  playlist: playlistResponse.playlist 
+                } 
+              });
+            } else {
+              return res.status(404).json({ error: 'Não foi possível criar a playlist.' });
+            }
           }
+        } catch (error) {
+          console.error('Erro ao processar JSON:', error);
+          return res.status(400).json({ error: 'Erro ao processar a resposta do Gemini.' });
         }
       }
     }
@@ -179,14 +194,6 @@ app.post('/chat', async (req, res) => {
 });
 
 app.get('/auth', (req, res) => res.redirect(spotifyApi.createAuthorizeURL(['playlist-modify-public', 'user-read-private'], 'state')));
-
-app.get('/check', (req, res) => {
-  if (spotifyTokens.accessToken) {
-    res.json({ isAuthenticated: true }); 
-  } else {
-    res.status(401).json({ isAuthenticated: false }); 
-  }
-});
 
 app.get('/callback', async (req, res) => {
   try {
@@ -225,40 +232,6 @@ const checkSpotifyAuth = async (req, res, next) => {
     res.status(401).json({ error: 'Reautenticação necessária' });
   }
 };
-
-app.post('/playlist', checkSpotifyAuth, async (req, res) => {
-  try {
-    const { mood, tracks } = req.body;
-
-    if (typeof mood !== 'string' || mood.trim().length === 0) {
-      return res.status(400).json({ error: 'Campo mood ausente ou inválido' });
-    }
-    if (!Array.isArray(tracks) || tracks.length === 0) {
-      return res.status(400).json({ error: 'Formato inválido para tracks. Deve ser um array de strings.' });
-    }
-
-    const uris = (await Promise.all(tracks.map(searchTrack))).filter(uri => uri);
-    if (uris.length < 3) return res.status(404).json({ error: 'Músicas não encontradas', found: uris.length, required: 3 });
-
-    const playlistName = `MoodTunes: ${new Date().toLocaleDateString('pt-BR')}`;
-    const playlist = await spotifyApi.createPlaylist(playlistName, { public: true, description: `Playlist gerada automaticamente pelo MoodTunes para o humor: ${mood}` });
-    await spotifyApi.addTracksToPlaylist(playlist.body.id, uris);
-
-    res.json({ 
-      success: true, 
-      playlist: { 
-        name: playlistName, 
-        url: playlist.body.external_urls.spotify, 
-        id: playlist.body.id, 
-        trackCount: uris.length, 
-        mood 
-      } 
-    });
-  } catch (error) {
-    console.error('Erro crítico:', error.stack);
-    res.status(error.statusCode || 500).json({ error: 'Falha na criação da playlist', details: error.body?.error || error.message });
-  }
-});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
