@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const SpotifyWebApi = require('spotify-web-api-node');
-require('dotenv').config();
+require('dotenv').config(); 
 
 const app = express();
 
@@ -18,7 +18,7 @@ app.use(express.json());
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY, { apiVersion: 'v1' });
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const spotifyApi = new SpotifyWebApi({
-  clientId: process.env.SPOTIFY_CLIENT_ID,
+  clientId: process.env.SPOTIFY_CLIENT_ID, 
   clientSecret: process.env.SPOTIFY_SECRET,
   redirectUri: process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback',
 });
@@ -193,8 +193,17 @@ app.post('/chat', async (req, res) => {
   }
 });
 
-app.get('/auth', (req, res) => res.redirect(spotifyApi.createAuthorizeURL(['playlist-modify-public', 'user-read-private'], 'state')));
+app.get('/auth', (req, res) => {
+  const scopes = ['playlist-modify-public', 'user-read-private'];
+  const state = 'state'; // Você pode gerar um estado único aqui
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const redirectUri = process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback';
 
+  const authorizeURL = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes.join(' '))}&state=${state}`;
+  
+  console.log('Authorize URL:', authorizeURL); // Log para depuração
+  res.redirect(authorizeURL);
+});
 app.get('/callback', async (req, res) => {
   try {
     const { code } = req.query;
@@ -214,7 +223,13 @@ app.get('/callback', async (req, res) => {
     res.status(500).send('Erro na autenticação');
   }
 });
-
+app.get('/check', (req, res) => {
+  if (spotifyTokens.accessToken) {
+    res.json({ isAuthenticated: true });
+  } else {
+    res.status(401).json({ isAuthenticated: false });
+  }
+});
 const checkSpotifyAuth = async (req, res, next) => {
   try {
     if (Date.now() >= spotifyTokens.expiresAt) {
