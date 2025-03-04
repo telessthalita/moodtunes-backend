@@ -195,13 +195,13 @@ app.post('/chat', async (req, res) => {
 
 app.get('/auth', (req, res) => {
   const scopes = ['playlist-modify-public', 'user-read-private'];
-  const state = 'state'; // Você pode gerar um estado único aqui
+  const state = 'state'; t, ja está tudo ok e funcionando, vamos faze
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const redirectUri = process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback';
 
   const authorizeURL = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes.join(' '))}&state=${state}`;
   
-  console.log('Authorize URL:', authorizeURL); // Log para depuração
+  console.log('Authorize URL:', authorizeURL);
   res.redirect(authorizeURL);
 });
 app.get('/callback', async (req, res) => {
