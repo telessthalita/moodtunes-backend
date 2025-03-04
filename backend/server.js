@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const SpotifyWebApi = require('spotify-web-api-node');
-require('dotenv').config(); 
+require('dotenv').config();
 
 const app = express();
 
@@ -18,7 +18,7 @@ app.use(express.json());
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_KEY, { apiVersion: 'v1' });
 const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const spotifyApi = new SpotifyWebApi({
-  clientId: process.env.SPOTIFY_CLIENT_ID, 
+  clientId: process.env.SPOTIFY_CLIENT_ID,
   clientSecret: process.env.SPOTIFY_SECRET,
   redirectUri: process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback',
 });
@@ -116,6 +116,7 @@ const createPlaylist = async (mood, tracks) => {
         id: playlist.body.id,
         trackCount: uris.length,
         mood,
+        tracks: tracks, // Inclui a lista de músicas no objeto retornado
       },
     };
   } catch (error) {
@@ -144,9 +145,9 @@ app.post('/chat', async (req, res) => {
            }
            **Não inclua nenhum texto adicional além do JSON.**
       `;
-      chatSessions.set(userId, { 
-        chat: model.startChat({ history: [{ role: 'user', parts: [{ text: initialPrompt }] }] }), 
-        interactionCount: 0 
+      chatSessions.set(userId, {
+        chat: model.startChat({ history: [{ role: 'user', parts: [{ text: initialPrompt }] }] }),
+        interactionCount: 0,
       });
     }
 
@@ -167,13 +168,13 @@ app.post('/chat', async (req, res) => {
             const playlistResponse = await createPlaylist(parsed.mood, parsed.tracks);
 
             if (playlistResponse.success) {
-              return res.json({ 
-                action: 'playlist_created', 
-                isFinished: true,
-                message: 'Obrigado por usar o MoodTunes! Sua playlist foi criada com sucesso. 🎵',
-                data: { 
-                  playlist: playlistResponse.playlist 
-                } 
+              return res.json({
+                action: 'playlist_created',
+                isFinished: false, 
+                message: 'Sua playlist foi criada com sucesso! 🎵\n\nO que você achou da playlist? Sua opinião é muito importante para nós!',
+                data: {
+                  playlist: playlistResponse.playlist,
+                },
               });
             } else {
               return res.status(404).json({ error: 'Não foi possível criar a playlist.' });
@@ -197,13 +198,14 @@ app.get('/auth', (req, res) => {
   const scopes = ['playlist-modify-public', 'user-read-private'];
   const state = 'state';
   const clientId = process.env.SPOTIFY_CLIENT_ID;
-  const redirectUri = process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback';
+  const redirectUri = process.env.SPOTIFY_REDIRECT_URI;
 
   const authorizeURL = `https://accounts.spotify.com/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scopes.join(' '))}&state=${state}`;
-  
+
   console.log('Authorize URL:', authorizeURL);
   res.redirect(authorizeURL);
 });
+
 app.get('/callback', async (req, res) => {
   try {
     const { code } = req.query;
@@ -217,7 +219,7 @@ app.get('/callback', async (req, res) => {
 
     spotifyApi.setAccessToken(spotifyTokens.accessToken);
 
-    res.redirect('https://moodtunes-frontend.onrender.com');
+    res.redirect(process.env.FRONTEND_URL);
   } catch (error) {
     console.error('Erro na autenticação:', error);
     res.status(500).send('Erro na autenticação');
@@ -231,21 +233,27 @@ app.get('/check', (req, res) => {
   }
 });
 const checkSpotifyAuth = async (req, res, next) => {
-  try {
-    if (Date.now() >= spotifyTokens.expiresAt) {
+  console.log('Verificando expiração do token...');
+  if (Date.now() >= spotifyTokens.expiresAt) {
+    console.log('Token expirado. Renovando...');
+    try {
       const data = await spotifyApi.refreshAccessToken();
       spotifyApi.setAccessToken(data.body.access_token);
-      spotifyTokens = { 
-        accessToken: data.body.access_token, 
+      spotifyTokens = {
+        accessToken: data.body.access_token,
         refreshToken: spotifyTokens.refreshToken,
-        expiresAt: Date.now() + (data.body.expires_in * 1000) 
+        expiresAt: Date.now() + (data.body.expires_in * 1000),
       };
+      console.log('Novo token gerado. Expira em:', new Date(spotifyTokens.expiresAt).toLocaleString());
+
+      // Salvar tokens no Redis (ou outro sistema de cache)
+      await client.set('spotifyTokens', JSON.stringify(spotifyTokens));
+    } catch (error) {
+      console.error('Erro ao renovar token:', error);
+      return res.status(401).json({ error: 'Reautenticação necessária' });
     }
-    next();
-  } catch (error) {
-    console.error('Erro de autenticação:', error);
-    res.status(401).json({ error: 'Reautenticação necessária' });
   }
+  next();
 };
 
 const PORT = process.env.PORT || 3000;
