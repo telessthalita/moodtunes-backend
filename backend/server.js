@@ -195,7 +195,7 @@ app.post('/chat', async (req, res) => {
 
 app.get('/auth', (req, res) => {
   const scopes = ['playlist-modify-public', 'user-read-private'];
-  const state = 'state'; t, ja está tudo ok e funcionando, vamos faze
+  const state = 'state';
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const redirectUri = process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback';
 
