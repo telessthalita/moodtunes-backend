@@ -116,7 +116,7 @@ const createPlaylist = async (mood, tracks) => {
         id: playlist.body.id,
         trackCount: uris.length,
         mood,
-        tracks: tracks, // Inclui a lista de músicas no objeto retornado
+        tracks: tracks, 
       },
     };
   } catch (error) {
@@ -246,7 +246,6 @@ const checkSpotifyAuth = async (req, res, next) => {
       };
       console.log('Novo token gerado. Expira em:', new Date(spotifyTokens.expiresAt).toLocaleString());
 
-      // Salvar tokens no Redis (ou outro sistema de cache)
       await client.set('spotifyTokens', JSON.stringify(spotifyTokens));
     } catch (error) {
       console.error('Erro ao renovar token:', error);
