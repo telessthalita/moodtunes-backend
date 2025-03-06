@@ -43,55 +43,59 @@ const searchTrack = async (track) => {
 
   try {
     const [title, artist] = track.split(/ - (.*)/s).map(s => s.trim());
-
-    if (!title || !artist) {
+    if (!title) {
       console.warn(`Formato inválido: ${track}`);
       return null;
     }
 
-    const normalizedTitle = normalizeText(title);
-    const normalizedArtist = normalizeText(artist);
+    const normalize = (text) => text.toLowerCase().replace(/[^\w\s]/gi, '');
 
     const queries = [
       `track:"${title}" artist:"${artist}"`,
       `track:"${title}"`,
-      `artist:"${artist}"`,
       `${title} ${artist}`,
-      `${normalizedTitle} ${normalizedArtist}`,
+      `${title}`,
+      `artist:"${artist}"`,
     ];
 
     for (const query of queries) {
       try {
-        const results = await spotifyApi.search(query, ['track'], { limit: 5, market: 'BR' });
+        console.log(` Buscando no Spotify: ${query}`);
+        const results = await spotifyApi.searchTracks(query, { limit: 10, market: 'BR' });
 
-        const match = results.body.tracks.items.find(item => {
-          const itemTitle = normalizeText(item.name);
-          const itemArtist = item.artists.map(a => normalizeText(a.name)).join(' ');
+        if (results.body.tracks.items.length > 0) {
+          const sortedTracks = results.body.tracks.items
+            .filter(item => !usedTracks.has(item.uri))
+            .sort((a, b) => b.popularity - a.popularity);
 
-          const titleMatch = itemTitle.includes(normalizedTitle) || normalizedTitle.includes(itemTitle);
-          const artistMatch = itemArtist.includes(normalizedArtist) || normalizedArtist.includes(itemArtist);
-          const popularity = item.popularity > 30;
+          for (const item of sortedTracks) {
+            const itemTitle = normalize(item.name);
+            const itemArtist = item.artists.map(a => normalize(a.name)).join(' ');
 
-          return titleMatch && artistMatch && popularity;
-        });
+            const titleMatch = itemTitle.includes(normalize(title)) || normalize(title).includes(itemTitle);
+            const artistMatch = itemArtist.includes(normalize(artist)) || normalize(artist).includes(itemArtist);
 
-        if (match && !usedTracks.has(match.uri)) {
-          usedTracks.add(match.uri);
-          trackCache.set(track, match.uri);
-          return match.uri;
+            if (titleMatch || artistMatch) {
+              console.log(`🎶 Música encontrada: ${item.name} - ${item.artists.map(a => a.name).join(', ')}`);
+              usedTracks.add(item.uri);
+              trackCache.set(track, item.uri);
+              return item.uri;
+            }
+          }
         }
       } catch (error) {
-        console.warn(`Erro na consulta "${query}":`, error.message);
+        console.warn(` Erro na consulta "${query}":`, error.message);
       }
     }
 
-    console.warn(`Música não encontrada: ${track}`);
+    console.warn(` Música não encontrada: ${track}`);
     return null;
   } catch (error) {
-    console.error(`Erro ao buscar música "${track}":`, error.message);
+    console.error(` Erro ao buscar música "${track}":`, error.message);
     return null;
   }
 };
+
 
 const createPlaylist = async (mood, tracks) => {
   try {
