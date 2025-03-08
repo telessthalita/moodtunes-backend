@@ -6,12 +6,18 @@ require('dotenv').config();
 
 const app = express();
 
+const allowedOrigins = [process.env.FRONTEND_URL || 'http://localhost:3000'];
+
 const corsOptions = {
-  origin: ['http://localhost:5174', 'http://localhost:3000', 'https://moodtunes-frontend.onrender.com'],
+  origin: allowedOrigins,
   methods: 'GET,POST,PUT,DELETE,OPTIONS',
   allowedHeaders: 'Content-Type,Authorization',
   credentials: true,
 };
+app.use(cors(corsOptions));
+
+app.use(cors(corsOptions));
+
 app.use(cors(corsOptions));
 app.use(express.json());
 
@@ -20,7 +26,7 @@ const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 const spotifyApi = new SpotifyWebApi({
   clientId: process.env.SPOTIFY_CLIENT_ID,
   clientSecret: process.env.SPOTIFY_SECRET,
-  redirectUri: process.env.SPOTIFY_REDIRECT_URI || 'https://moodtunes-backend.onrender.com/callback',
+  redirectUri: process.env.SPOTIFY_REDIRECT_URI,
 });
 
 const chatSessions = new Map();
