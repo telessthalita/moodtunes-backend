@@ -56,7 +56,10 @@ const searchTrack = async (track) => {
       `${title} ${artist}`,
       `${title}`,
       `artist:"${artist}"`,
+      `track:"${title} remix"`,
+      `track:"${title}" remix`,
     ];
+    
 
     for (const query of queries) {
       try {
@@ -76,7 +79,7 @@ const searchTrack = async (track) => {
             const artistMatch = itemArtist.includes(normalize(artist)) || normalize(artist).includes(itemArtist);
 
             if (titleMatch || artistMatch) {
-              console.log(`🎶 Música encontrada: ${item.name} - ${item.artists.map(a => a.name).join(', ')}`);
+              console.log(`Música encontrada: ${item.name} - ${item.artists.map(a => a.name).join(', ')}`);
               usedTracks.add(item.uri);
               trackCache.set(track, item.uri);
               return item.uri;
